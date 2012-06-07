@@ -1,0 +1,12 @@
+[Desktop Entry]
+Encoding=UTF-8
+Type=Application
+Exec=/usr/bin/kdesu -c /usr/bin/vmrestore.gui
+Icon=/usr/share/icons/vmrestore.gui
+Terminal=false
+X-KDE-StartupNotify=true
+
+Name=VMRestore
+
+GenericName=Virtual Machine Restore
+Categories=Qt;KDE;System;Utility

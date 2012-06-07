@@ -1,0 +1,257 @@
+#!/usr/bin/python
+import os,sys,time,getopt,tempfile,syslog
+sys.path.append('/Applications/vmbackup.app/Contents/MacOS/lib')
+sys.path.append('/usr/lib/vmbackup')
+from vmbackup_common import *
+
+# Any VMs to be excluded from backup by default.
+# This can now be set from the command line using the excludevm
+# option.
+EXCLUDEFROMBACKUP=[]
+
+# This can be suspend, snapshot or lvm, suspend will cause the VM to be
+# unavailable during the backup.  However, snapshots don't work
+# reliably on VMware server 1.0x and can be difficult to clean
+# up if there is an issue.
+# lvm does the following: suspend the vm, make an lvm snapshot of the VMs
+# filesystem, resume the vm and backup the vm from the lvm snapshot.  The
+# lvm option only works if the VM is stored on a lvm volume that has free
+# space unused in the volume group to use for the lvm snapshot.
+VMSYNCMETHOD='suspend'
+
+# This can currently be tar, bz2, tgz or iso, this specifies the
+# backup method and compression used. 
+# tar - Uncomressed tar file
+# tgz - Uses tar with gzip compression, this is the faster method
+# bz2 - Uses tar with bzip2 compression, this is much slower than using tgz but generates smaller files.
+# iso - Creates an iso CD/DVD file
+BACKUPMETHOD='bz2'
+
+# LVM defaults
+VMVG='datastore'
+VMLV='datastore'
+VGMINFREEPE=int(256)
+VGSNAPSHOTSIZE='4G'
+
+# Destination directory
+DESTDIR='.'
+
+LOCKFILE='/var/lock/vmbackup.lock'
+LOGFILE='/var/log/vmbackup/backup.log'
+LOGCONSOLE=True
+LOGSYSLOG=False
+
+programs=PROGRAMS()
+
+def keyboard_delete(numchar=1):
+	for count in range(0,numchar):
+		sys.stdout.write('\b \b')
+	sys.stdout.flush()
+
+def message(message,backupamount=0):
+	if backupamount:
+		keyboard_delete(backupamount)
+	print message,
+	sys.stdout.flush()
+	#time.sleep(3)
+	return len(message)
+
+oldbs=0
+def progresscallbackold(percent,text,backupamount=0):
+    global LOGCONSOLE
+    global LOGSYSLOG
+    if LOGCONSOLE:
+        progresscallbackconsole(percent,text,backupamount)
+    if LOGSYSLOG:
+        progresscallbacksyslog(percent,text,backupamount)
+
+def progresscallbacksyslog(percent,text,backupamount=0):
+    syslog.openlog('vmbackup')
+    syslog.syslog(text)
+    syslog.closelog()
+    
+def progresscallbackconsole(percent,text,backupamount=0):
+    global oldbs
+    if percent == 0:
+        outstring=text
+    else:
+        outstring='%s (%d%%)' % (text,percent)
+    message(outstring,backupamount=oldbs)
+    if backupamount:
+        oldbs=backupamount
+    else:
+        oldbs=len(outstring)
+    
+def usage():
+    print 'vmbackup [--all|--excludevm vm|--includevm vm] [',
+    if isproductinstalled('vmware_workstation'):
+        print '--hot |',
+    if programs.iscommand('vgdisplay') and programs.iscommand('lvcreate') and programs.iscommand('mount'):
+        print '--lvm | --lvmsuspend |',
+    print '--cold ] [--format tgz | tbz2 | zip | iso | dir] [--logsyslog] [--dest directory|user@hostname:directory] [--help]'
+    print '\t-a, --all      \tBackup all registered VMs, except VMs that have been excluded'
+    print '\t-e, --excludevm\tExclude a VM from backup'
+    print '\t-i, --includevm\tAdd a VM to the list of VMs to back up'
+    if isproductinstalled('vmware_workstation'):
+        print '\t-s, --hot      \tPerform a hot backup (Backup using a snapshot)'
+        print '\t               \tThe VM will remain running while the backup is happening, this is not always'
+        print '\t               \treliable under VMware server'
+    if programs.iscommand('vgdisplay') and programs.iscommand('lvcreate') and programs.iscommand('mount'):
+        print '\t-l, --lvm      \tPerform a backup using an LVM snapshot, the VM files must be stored on an LVM'
+        print '\t               \tvolume.  This is a hot backup however it does not store cpu/memory state so'
+        print '\t               \tThe VM will start from a powered off state when restored.'
+        print '\t-L, --lvmsuspend\tPerform a backup using LVM snapshot and suspend'
+        print '\t               \tThe VM will be pause while the LVM snapshot is created.  Total downtime is'
+        print '\t               \tnormally less than a minute (similar to a hot backup).'
+        print '\t               \tThis is like a backup with the --lvm option but the restored VM will be able'
+        print '\t               \tto resume to the running state when restored to a compatible CPU.'
+    print '\t-c, --cold     \tPerform a cold backup (Backup using suspend)'
+    print '\t               \tThe VM will be unavailable during the backup when this archiveformat is used.'
+    print '\t-f, --format   \tChoose the output archive format, available formats are:'
+    if programs.iscommand('tar'):
+        print '\t               \ttar  - Create an uncompress tar archive of the VM'
+        if programs.iscommand('gzip'):
+            print '\t               \ttgz  - Create a gziped archive of the VM'
+        if programs.iscommand('bzip2'):
+            print '\t               \ttbz2 - Create a bzip2 archive of the VM, this option is much slower and uses'
+            print '\t               \t       more CPU than the tgz option'
+    if programs.iscommand('zip'):
+        print '\t               \tzip  - Create a zip file archive of VM'
+    print '\t               \tdir  - Create a copy of the VM in a new directory.  This will overwrite the'
+    print '\t               \t       contents of the destination directory, use with caution.'
+    if programs.iscommand('mkisofs'):
+        print '\t               \tiso  - Store the VM in an iso image that can be burned to a CD or DVD, the'
+        print '\t               \t       entire Virtual Machine directory must not exceed the size of the'
+        print '\t               \t       desired media.'
+    print '\t-d, --dest     \tSpecify the destination to write the backup file to, the current directory is'
+    print '\t               \tused if this option is not provided'
+    print '\t               \tCan also be a remote host Unix/Linux host via ssh the format is'
+    print '\t               \tuser@hostname:destdir'
+    print '\t--logsyslog    \tLog output to syslog instead of the console'
+    print
+    print 'Examples:'
+    print '\tCreate a lvm backup of all registered VMs and store them in directory /backups on a remote'
+    print '\thost named filehost'
+    print '\t\tvmbackup --lvm --dest filehost:/backups'
+    print 
+    print '\tCreate a cold backup of a VM named foobar.com with the maximum compression'
+    print '\t\tvmbackup --includevm foobar.com --cold --format tbz2'
+
+if __name__ == "__main__":        
+    # Parse the command line
+    try:
+        opts,args = getopt.getopt(sys.argv[1:],"aesclLi:d:f:",["all","excludevm=","hot","cold","lvm","lvmsuspend","logsyslog","includevm=","format=","dest=","help"])
+    except getopt.GetoptError:
+        usage()
+        sys.exit(2)
+    
+    # Log to syslog if we aren't running from a console
+    if sys.stdin.isatty() == False:
+        LOGCONSOLE=False
+        LOGSYSLOG=True
+        progresscallback=progresscallbacksyslog
+    else:    
+        progresscallback=progresscallbackconsole
+        
+    ALL=False
+    excludevm=[]
+    includevm=[]
+    for o,a in opts:
+        if o in ("-a","--all"):
+            ALL=True
+        if o in ("--logsyslog"):
+            LOGSYSLOG=True
+            LOGCONSOLE=False
+            progresscallback=progresscallbacksyslog
+        if o in ("-e","--excludevm"):
+            excludevm.append(a)
+        if o in ("-i","--includevm"):
+            includevm.append(a)
+        if o in ("-s","--hot"):
+            VMSYNCMETHOD='snapshot'
+        if o in ("-c","--cold"):
+            VMSYNCMETHOD='suspend'
+        if o == "-l" or o == "--lvm":
+            VMSYNCMETHOD='lvm'
+        if o in ("-d","--dest"):
+            DESTDIR=a
+        if o == '-L' or o == '--lvmsuspend':
+            VMSYNCMETHOD='lvmsuspend'
+        if o in ("--help"):
+            usage()
+            sys.exit(0)
+        if o in ("-f","--format"):
+            if a in ('tbz2','bz2','tar.bz2','bz'):
+                BACKUPMETHOD='bz2'
+            if a in ('tgz','tgz2','tar.gz','gz'):
+                BACKUPMETHOD='tgz'
+            if a in ('tar'):
+                BACKUPMETHOD='tar'
+            if a in ('zip'):
+                BACKUPMETHOD='zip'
+            if a in ('dir'):
+                BACKUPMETHOD='dir'
+            if a in ('iso','cd','dvd'):
+                BACKUPMETHOD='iso'
+
+    if int(programs.popen('id','-u').readlines()[0].strip()) != 0:
+        message('This program may require root (Administrator) privleges in order to run properly\n')
+        #sys.exit(0)
+ 
+    allvms=[]	
+    vmsbyname={}
+    allvms=getvmlist()
+    for virt in allvms:
+        vmname=getvmname(virt)
+        vmsbyname[vmname]=virt
+    if ALL:
+        vms=allvms
+    else:
+        vms=[]
+
+    for vmi in excludevm:
+        vms.remove(vmi)
+    
+    for vmi in includevm:
+        try:
+            fh=open(vmi,'r')
+            fh.close()
+            vms.append(vmi)
+        except IOError:
+            try:
+                vms.append(vmsbyname[vmi])
+            except KeyError:
+                pass	
+    
+    if len(vms) == 0:
+        print 'Error: No VMs specified for backup'
+        print
+        usage()
+        sys.exit(1)
+        
+    vmitems=[]
+    for vmi in vms:
+        vmitems.append(vm(configfile=vmi,destdir=DESTDIR))
+    
+    for newvm in vmitems:
+        if newvm.vmname not in EXCLUDEFROMBACKUP: 
+            if LOGCONSOLE:
+                message('%s: ' % newvm.vmname)
+            oldbs=0
+            progresscallback(0,'Fixing Virtual Machine State')
+            if newvm.getstate() == 'off' or newvm.getstate() == 'suspended':
+                rc=newvm.backup(archiveformat=BACKUPMETHOD,callback=progresscallback)
+            else:
+                if VMSYNCMETHOD == 'snapshot':
+                    rc=newvm.backup_vmware_snapshot(archiveformat=BACKUPMETHOD,callback=progresscallback)
+                if VMSYNCMETHOD == 'lvm':
+                    rc=newvm.backup_lvm_snapshot(archiveformat=BACKUPMETHOD,callback=progresscallback)
+                if VMSYNCMETHOD == 'lvmsuspend':
+                    rc=newvm.backup_lvm_snapshot(archiveformat=BACKUPMETHOD,callback=progresscallback,suspendvm=True)
+                if VMSYNCMETHOD == 'suspend':
+                    rc=newvm.backup_suspend(archiveformat=BACKUPMETHOD,callback=progresscallback)
+            if rc == BACKOK:
+                progresscallback(0,'Backup of %s Completed Successfully' % newvm.vmname)
+            else:
+                progresscallback(0,'Backup of %s failed' % newvm.vmname)
+            print

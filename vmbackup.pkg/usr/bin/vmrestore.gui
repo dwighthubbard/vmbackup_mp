@@ -1,0 +1,93 @@
+#!/usr/bin/python
+import sys,os,time
+#import subprocess
+from qt import *
+sys.path.append('/usr/lib/vmbackup')
+from vmrestore_gui_ui import *
+#from vmbackup_qt3_progress_ui import *
+from vmbackupprogress_qt3_ui import *
+from vmbackup_common import *
+
+DEBUG = False
+
+programs=PROGRAMS()
+progressdialog=0
+
+def progresscallbackgeneric(percent,text):
+    if DEBUG:
+        print 'Callback:', percent,text
+        sys.stdout.flush()
+    progressdialog.setLabelText(text)
+    progressdialog.setProgress(percent)
+    a.processEvents()
+
+def progresscallback(percent,text):
+    if DEBUG:
+        print 'Callback:', percent,text
+        sys.stdout.flush()
+    progressdialog.textLabelStatus.setText(text)
+    progressdialog.progressBarStatus.setProgress(percent)
+    a.processEvents()
+
+class myVMRestore(VMRestore):
+    def __init__(self,parent = None,name = None,modal = 0,fl = 0):
+        VMRestore.__init__(self,parent,name,modal,fl)
+        self.radioButtonDestRemote.hide()
+        self.lineEditRemoteHost.hide()
+    def pushButtonDestDir_clicked(self):
+        #print 'pushButtonDestDir clicked'
+        dialog=QFileDialog(self.lineEditDestDir.text(),'',self,'test',True)
+        directory=dialog.getExistingDirectory()
+        if directory != '':
+            self.lineEditDestDir.setText(directory)
+    def pushButtonSource_clicked(self):
+        #print 'pushButtonSource clicked'
+        dialog=QFileDialog(self.lineEditSource.text(),'',self,'test',True)
+        directory=dialog.getOpenFileName("/var/lib/vmware/backups","VMBackup Archives (*.tar*)",self,"open file dialog","Choose a file to open" )
+        if directory != '':
+            self.lineEditSource.setText(directory)
+    def VMRestore_selected(self,a0):
+        #print 'Page',a0
+        self.setHelpEnabled(self.currentPage(),False)
+        if a0 == 'Summary':
+            self.textLabelSummarySource.setText(self.lineEditSource.text())
+            self.textLabelDestDir.setText(self.lineEditDestDir.text())
+            if self.radioButtonDestRemote.isChecked():
+                self.textLabelDestComputer.setText(self.lineEditRemoteHost.text())
+            else:
+                self.textLabelDestComputer.setText('Local Computer')
+            self.setFinishEnabled(self.currentPage(),True)            
+
+if __name__ == "__main__":
+    a = QApplication(sys.argv)
+    QObject.connect(a,SIGNAL("lastWindowClosed()"),a,SLOT("quit()"))
+    w = myVMRestore()
+    #progressdialog=QProgressDialog('Restore Status','Abort',4)
+    progressdialog=VMBackupProgress()
+    progressdialog.textLabelCaption.setText('<B>VMRestore Status</B>')
+    progressdialog.progressBarStatus.setTotalSteps(100)
+    progressdialog.pushButtonCancel.hide()
+    if int(programs.popen('id','-u').readlines()[0].strip()) != 0:
+        QMessageBox.critical(w,'VMRestore',"This program must be run with root (Administrator) privleges in order to operate",QMessageBox.Abort,QMessageBox.NoButton,QMessageBox.NoButton)
+        sys.exit(0)
+    a.setMainWidget(w)
+    w.show()
+    a.exec_loop()
+    if w.result() == 0:
+        sys.exit(0)
+    parameters=[]
+    dest=''
+    source=w.lineEditSource.text()
+    if w.radioButtonDestRemote.isChecked():
+        dest='%s:' % w.lineEditRemoteHost.text()
+    dest=dest+w.lineEditDestDir.text()
+    progressdialog.show()
+    time.sleep(1)
+    progresscallback(0,'Starting restore')
+    rc=restore(source=source,dest=dest,callback=progresscallback)
+    if rc == RESTOK:
+        QMessageBox.information(w,'VMRestore',"Restore Completed Sucessfully",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == RESTINVALID:
+        QMessageBox.warning(w,'VMRestore',"Restore Failed, the file specified does not appear to be a VMBackup Archive",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == RESTUNSUPPORTED:
+        QMessageBox.warning(w,'VMRestore',"Restore Failed, ZIP file archives are not supported by VMRestore",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)

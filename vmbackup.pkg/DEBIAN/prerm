@@ -1,0 +1,4 @@
+#!/bin/sh
+/usr/bin/xdg-desktop-menu uninstall /usr/share/app-install/desktop/vmbackup.desktop
+/usr/bin/xdg-desktop-menu uninstall /usr/share/app-install/desktop/vmrestore.desktop
+exit 0

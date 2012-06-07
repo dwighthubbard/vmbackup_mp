@@ -1,0 +1,12 @@
+Package: vmbackup
+Version: 2.67
+Section: utility 
+Priority: optional
+Architecture: all
+Essential: no
+Depends: python, tar, openssh-client, python-qt3
+Recommends: lvm2,kde-desktop, kde4-desktop,zip,smbfs,mkisofs
+Installed-Size: 1024
+Maintainer: Dwight Hubbard <dwight@dwighthubbard.com>
+Provides: vmbackup, vmbackup.gui, vmrestore, vmrestore.gui
+Description: VMware Server Backup/Restore utility

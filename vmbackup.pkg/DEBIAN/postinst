@@ -1,0 +1,6 @@
+#!/bin/sh
+if [ -e "/usr/bin/kdesu" ]; then
+	/usr/bin/xdg-desktop-menu install --novendor /usr/share/app-install/desktop/vmbackup.desktop
+	/usr/bin/xdg-desktop-menu install --novendor /usr/share/app-install/desktop/vmrestore.desktop
+fi
+exit 0

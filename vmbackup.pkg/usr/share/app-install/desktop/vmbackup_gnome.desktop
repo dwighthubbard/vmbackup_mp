@@ -1,0 +1,12 @@
+[Desktop Entry]
+Encoding=UTF-8
+Type=Application
+Exec=/usr/bin/gksu -c /usr/bin/vmbackup.gui
+Icon=/usr/share/icons/vmbackup.gui
+Terminal=false
+X-KDE-StartupNotify=true
+
+Name=VMBackup
+
+GenericName=Virtual Machine Backup
+Categories=Qt;KDE;System;Utility

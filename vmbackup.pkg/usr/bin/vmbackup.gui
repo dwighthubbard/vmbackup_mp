@@ -1,0 +1,193 @@
+#!/usr/bin/python
+import sys,os,time
+#import subprocess
+from qt import *
+sys.path.append('/usr/lib/vmbackup')
+from vmbackup_qt3_ui import *
+from vmbackup_qt3_progress_ui import *
+from vmbackupprogress_qt3_ui import *
+from vmbackup_common import *
+
+DEBUG = False
+
+programs=PROGRAMS()
+progressdialog=0
+
+def progresscallbackgeneric(percent,text):
+    progressdialog.setLabelText(text)
+    progressdialog.setProgress(percent)
+    a.processEvents()
+
+def progresscallback(percent,text):
+    if DEBUG:
+        print 'Callback:', percent,text
+        sys.stdout.flush()
+    progressdialog.textLabelStatus.setText(text)
+    progressdialog.progressBarStatus.setProgress(percent)
+    a.processEvents()
+
+class myvmbackup(vmbackup):
+    def __init__(self,parent = None,name = None,modal = 0,fl = 0):
+        vmbackup.__init__(self,parent,name,modal,fl)
+        product,version=getproductinfo()
+        self.vmlist={}
+        if self.populatevmlist() == False:
+            QMessageBox.critical(parent, "Unable to find any Virtual Machines","I am unable to find any virtual machines.<br>Either there are not any Virtual Machines to backup or this program does not have the privleges to access the list of Virtual Machines.",QMessageBox.Abort,QMessageBox.NoButton,QMessageBox.NoButton)
+            sys.exit(0)
+        if product == 'vmware_server':
+            if version == 1:
+                # Disable hot backup option, doesn't work with this version
+                self.radioBackupHot.setEnabled(False)
+                if self.radioBackupCold.isChecked() == False:
+                    self.radioBackupCold.animateClick()
+            if version == 3:
+                # Disable cold backup option doesn't work with this version
+                self.radioBackupCold.setEnabled(False)
+                if self.radioBackupHot.isChecked() == False:
+                    self.radioBackupHot.animateClick()
+        if product == 'vmware_fusion':
+            # Disable hot backup option, doesn't work with this version
+            self.radioBackupHot.setEnabled(False)
+            if self.radioBackupCold.isChecked() == False:
+                self.radioBackupCold.animateClick()
+    def pushDestinationDirectory_clicked(self):
+        dialog=QFileDialog(self.lineDestination.text(),'',self,'test',True)
+        directory=dialog.getExistingDirectory()
+        if directory != '':
+            self.lineDestination.setText(directory)
+    def radioLocalComputer_clicked(self):
+        self.lineRemoteUser.setEnabled(False)
+        self.lineRemoteComputer.setEnabled(False)
+    def radioRemoteComputer_clicked(self):
+        self.lineRemoteUser.setEnabled(True)
+        self.lineRemoteComputer.setEnabled(True)
+    def vmbackup_selected(self,a0):
+        self.setHelpEnabled(self.currentPage(),False)
+        if a0 == 'Summary':
+            self.textSummarySource.setText(self.vmlist[self.listVMs.currentText().ascii()])
+            if self.radioBackupHot.isChecked():
+                self.textSummaryBackupMethod.setText('Hot Backup using VMware Snapshots')
+            if self.radioBackupLVM.isChecked():
+                self.textSummaryBackupMethod.setText('Hot Backup using LVM')
+            if self.radioBackupCold.isChecked():
+                self.textSummaryBackupMethod.setText('Cold Backup')
+            if self.radioTAR.isChecked():
+                self.textSummaryBackupFormat.setText('Uncompressed Tar Archive')
+            if self.radioTGZ.isChecked():
+                self.textSummaryBackupFormat.setText('GZipped Tar Archive')
+            if self.radioTBZ2.isChecked():
+                self.textSummaryBackupFormat.setText('BZip2 Tar Archive')
+            if self.radioISO.isChecked():
+                self.textSummaryBackupFormat.setText('ISO CD/DVD Image')
+            if self.radioZip.isChecked():
+                self.textSummaryBackupFormat.setText('ZIP Archive')
+            if self.radioDir.isChecked():
+                self.textSummaryBackupFormat.setText('Directory')
+            if self.radioLocalComputer.isChecked():
+                self.textSelectDestDir.setText(self.lineDestination.text())
+            else:
+                dest=''
+                if self.lineRemoteUser.text() != '':
+                    dest=self.lineRemoteUser.text()+'@'
+                dest=dest+self.lineRemoteComputer.text()+':'+self.lineDestination.text()
+                print dest
+                if dest =='':
+                    dest='Current Directory'
+                self.textSelectDestDir.setText(dest)
+            self.setFinishEnabled(self.currentPage(),True)            
+    def populatevmlist(self):
+        self.listVMs.clear()
+        USELOCAL=False
+        listing=getvmlist()
+        if USELOCAL:
+            if programs.commands['vmware-cmd'] !='':
+                for vms in programs.popen('vmware-cmd','-l').readlines():
+                    listing.append(vms.strip())
+            if len(listing) == 0:
+                if programs.commands['vmrun'] != '':
+                    for vms in programs.popen('vmrun','2> /dev/null list').readlines():
+                        if vms.find('.vmx') != -1:
+                            listing.append(vms.strip())
+        if len(listing):
+            for item in listing:
+                shortname=getvmname(item)
+                self.listVMs.insertItem(shortname)
+                self.vmlist[shortname]=item
+            self.listVMs.setSelected(0,True)
+            return True
+        return False
+        
+class MyBackupStatus(BackupStatus):
+        def __init__(self,parent = None,name = None,modal = 0,fl = 0):
+            BackupStatus.__init__(self,parent,name,modal,fl)
+
+if __name__ == "__main__":
+    a = QApplication(sys.argv)
+    QObject.connect(a,SIGNAL("lastWindowClosed()"),a,SLOT("quit()"))
+    w = myvmbackup()
+    
+    progressdialog=VMBackupProgress()
+    progressdialog.textLabelCaption.setText('<B>VMBackup Status</B>')
+    progressdialog.progressBarStatus.setTotalSteps(100)
+    progressdialog.pushButtonCancel.hide()
+    
+    if int(programs.popen('id','-u').readlines()[0].strip()) != 0:
+        QMessageBox.critical(w,'VMBackup',"This program may need to be run with root (Administrator) privleges in order to operate",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+        #sys.exit(0)
+    a.setMainWidget(w)
+    w.show()
+    a.exec_loop()
+    if w.result() == 0:
+        sys.exit(0)
+    parameters=[]
+    dest=''
+    if w.radioLocalComputer.isChecked():
+        dest="%s" % w.lineDestination.text()
+    else:
+        dest='%s:%s' % (w.lineRemoteComputer.text(),w.lineDestination.text())
+        if w.lineRemoteUser.text() != '':
+            dest="%s@%s" % (w.lineRemoteUser.text(),dest)
+    backupvm=vm(configfile="%s" % w.vmlist['%s' % w.listVMs.currentText()],destdir=dest)
+    if w.radioTAR.isChecked():
+        archiveformat='tar'
+    if w.radioTGZ.isChecked():
+        archiveformat='tgz'
+    if w.radioTBZ2.isChecked():
+        archiveformat='tbz2'
+    if w.radioISO.isChecked():
+        archiveformat='iso'
+    if w.radioZip.isChecked():
+        archiveformat='zip'
+    if w.radioDir.isChecked():
+        archiveformat='dir'
+    progressdialog.show()
+    progresscallback(0,'Fixing Virtual Machine State')
+    if backupvm.getstate() == 'off' or backupvm.getstate() == 'suspended':
+        rc=backupvm.backup(archiveformat=archiveformat,callback=progresscallback)
+        progresscallback(100,'Backup complete')
+    else:
+        if w.radioBackupHot.isChecked():
+            rc=backupvm.backup_vmware_snapshot(archiveformat=archiveformat,callback=progresscallback)
+        if w.radioBackupLVM.isChecked():
+            rc=backupvm.backup_lvm_snapshot(archiveformat=archiveformat,callback=progresscallback)
+        if  w.radioBackupCold.isChecked():
+            rc=backupvm.backup_suspend(archiveformat=archiveformat,callback=progresscallback)
+    if rc == BACKOK:
+        QMessageBox.information(w,'VMBackup',"Backup Completed Sucessfully",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == BACKLOCKED:
+        QMessageBox.warning(w,'VMBackup',"Backup Failed, Backup is locked",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == BACKNOSUPPORT:
+        QMessageBox.warning(w,'VMBackup',"Backup Failed, needed support software is not installed",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == BACKMETHODUS:
+        QMessageBox.warning(w,'VMBackup',"Backup Failed, backup method is not supported with this Virtualization software",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == BACKVMSNAPFILE:
+        QMessageBox.warning(w,'VMBackup',"Backup Failed, VMware snapshot operation failed",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == BACKSUSPENDFAIL:
+        QMessageBox.warning(w,'VMBackup',"Backup Failed, Unable to suspend the virtual machine",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == BACKNOVGSPACE:
+        QMessageBox.warning(w,'VMBackup',"Backup Failed, LVM Volume group does not have sufficent free space to create a snapshot",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == BACKLVMSNAPFAIL:
+        QMessageBox.warning(w,'VMBackup',"Backup Failed, LVM Snapshot operation failed",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+    if rc == BACKNOTONLVM:
+        QMessageBox.warning(w,'VMBackup',"Backup Failed, Virtual machine is not stored on an LVM volume",QMessageBox.Ok,QMessageBox.NoButton,QMessageBox.NoButton)
+

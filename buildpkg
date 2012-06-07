@@ -1,0 +1,84 @@
+#!/usr/bin/python
+import sys,os,time
+BINPKGS=True
+
+TIMESTAMP=time.strftime('%y%m%d%H%M%S')
+
+newfile=open('vmbackup.pkg/DEBIAN/control.new','w')
+for line in open('vmbackup.pkg/DEBIAN/control','r').readlines():
+    splitline=line.strip().split()
+    if splitline[0].lower()=='version:':
+        VERSION='%2.2f' % (float(splitline[1])+.01)
+        newfile.write('Version: %s\n' % VERSION)
+    else:
+        newfile.write(line)
+newfile.close()
+os.rename('vmbackup.pkg/DEBIAN/control','control.%s.bak' % time.strftime('%Y%m%d%H%M%S'))
+os.rename('vmbackup.pkg/DEBIAN/control.new','vmbackup.pkg/DEBIAN/control')
+
+#print 'Checking the source into RCS'
+#SOURCE=['vmbackup','vmbackup_common.py','vmbackup.gui','vmbackupprogress_qt3.ui','vmbackupprogress_qt3_ui.py','vmbackup_qt3_progress_ui.py','vmbackup_qt3_ui.py','vmrestore','vmrestore.gui','vmrestore.gui.ui','vmrestore_gui_ui.py','vmrestore.gui_ui.py','vmrestore_qt4.ui']
+#for source in SOURCE:
+#  print ('ci -l -n%s %s' % (VERSION,source))
+
+#TARBALL='vmbackup-%s.tar.gz' % VERSION
+TARBALL='vmbackup-%s.tar.bz2' % VERSION
+
+print 'Building debian package vmbackup_%s_all.deb' % VERSION
+for line in os.popen('dpkg --build vmbackup.pkg ./').readlines():
+    print '\t%s' % line.strip()
+print '\tMoving package to the packages directory'
+os.system('mv vmbackup_%s_all.deb packages' % VERSION)
+print '\tInstalling the new package'
+os.system('dpkg -i packages/vmbackup_%s_all.deb' % VERSION)
+print
+	
+print 'Building tarball',TARBALL
+print '\tCopying files from debian package to tar package dirs'
+os.system('cp vmbackup.pkg/usr/bin/* vmbackup_tar/bin')
+os.system('cp vmbackup.pkg/usr/lib/vmbackup/* vmbackup_tar/lib/vmbackup')
+os.system('cp -r vmbackup.pkg/Applications vmbackup_tar')
+os.system('find vmbackup_tar -name "*~" -exec rm {} \;')
+print '\tCopying tar template_directory into tar versioned directory'
+os.system('cp -a vmbackup_tar "vmbackup-%s"' % VERSION)
+print '\tCreating tarball %s' % TARBALL
+for line in os.popen('tar -cjvf "%s" "vmbackup-%s"' % (TARBALL,VERSION)).readlines():
+    print '\t\t%s' % line.strip()
+print '\tRemoving temporary directory'
+os.system('rm -r "vmbackup-%s"' % VERSION)
+print '\tMoving tarball to the packages directory'
+os.system('mv %s packages' % TARBALL)
+print
+
+#echo Building rpm package
+print 'Building RPM package'
+#cp $TARBALL /usr/src/rpm/SOURCES
+print '\tCopying tarball package %s into /usr/src/rpm/SOURCES' % TARBALL
+os.system('cp packages/%s /usr/src/rpm/SOURCES' % TARBALL)
+print '\tUpdating the version in the SPEC file for the package'
+os.rename('/usr/src/rpm/SPECS/vmbackup.spec','/usr/src/rpm/SPECS/vmbackup.spec.%s' % TIMESTAMP)
+outfile=open('/usr/src/rpm/SPECS/vmbackup.spec','w')
+for line in open('/usr/src/rpm/SPECS/vmbackup.spec.%s' % TIMESTAMP,'r').readlines():
+    splitline=line.strip().split()
+    if len(splitline) and splitline[0].lower() == 'version:':
+        outfile.write('Version: %s\n' % VERSION)
+    else: 
+        if len(splitline) and splitline[0].lower() == 'source:':
+            outfile.write('Source: ftp://download.dwighthubbard.info/vmware/backup/%s\n'%TARBALL)	
+        else:
+            outfile.write(line)
+outfile.close()
+print '\tBuilding the RPM'
+for line in os.popen('rpmbuild 2>&1 -ba --target noarch /usr/src/rpm/SPECS/vmbackup.spec').readlines():
+    print '\t\t%s' % line.strip()
+print '\tCopying the rpm package to the current directory'
+os.system('cp /usr/src/rpm/RPMS/noarch/vmbackup-%s* packages' % VERSION)
+
+print 'Attempting to create a mac dmg package'
+#os.system('dd if=/dev/zero of=packages/vmbackup-%s.dmg bs=100K count=6' % VERSION)
+#os.system("mkfs.hfsplus -v 'VMBackup' packages/vmbackup-%s.dmg" % VERSION)
+#os.mkdir('mnt')
+#os.system('mount -t hfsplus -o loop packages/vmbackup-%s.dmg mnt' % VERSION)
+#os.system('cp -a vmbackup.pkg/* mnt')
+#os.system('umount mnt')
+#os.rmdir('mnt')
